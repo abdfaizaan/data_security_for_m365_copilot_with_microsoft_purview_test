@@ -88,6 +88,64 @@ foreach ($m in @("AIPService","ExchangeOnlineManagement","Microsoft.Online.Share
 Import-Module AIPService -Force
 Import-Module ExchangeOnlineManagement -Force
 
+# =====================================================================================
+# AUTHENTICATION MODEL - READ THIS BEFORE CHANGING ANYTHING BELOW
+# =====================================================================================
+#
+# This script authenticates as the CloudLabs ODL ADMIN USER, using the username and
+# password that CloudLabs itself writes to C:\LabFiles\AzureCreds.txt. This is the
+# standard CloudLabs pattern and is used by other shipping labs on this platform.
+#
+# Five places depend on it:
+#   1. Connect-IPPSSession  -Credential   (labels, policy, role groups, SITs, DLP)
+#   2. Connect-ExchangeOnline -Credential (audit, Organization Management)
+#   3. Graph ROPC       (grant_type=password) - EnableMIPLabels
+#   4. SharePoint ROPC  (grant_type=password) - EnableAIPIntegration
+#
+# WHY THIS WORKS: ODL tenants ship with security defaults and Conditional Access OFF.
+# Confirmed with the CloudLabs team on 2026-08-31, and verified on three live tenants.
+#
+# NOT AFFECTED by the Azure mandatory MFA enforcement (Phase 2, from 1 July 2026): that
+# enforcement is scoped to requests against https://management.azure.com/ only, i.e. Azure
+# Resource Manager operations. Nothing in this script touches ARM - every call goes to
+# Exchange Online, Security & Compliance, Graph or SharePoint.
+#
+# -------------------------------------------------------------------------------------
+# IF THIS EVER STARTS FAILING WITH AUTH ERRORS, READ HERE FIRST
+# -------------------------------------------------------------------------------------
+# Symptom: AADSTS50076 / AADSTS50079 / "strong authentication required", or the auth probe
+# below writing FATAL. Cause: MFA is now being enforced on this tenant - most likely
+# security defaults or a Conditional Access policy was switched on, NOT the Azure ARM
+# enforcement.
+#
+# The password-based flows here CANNOT be made to work with MFA. ROPC is incompatible with
+# MFA by design, and Microsoft has deprecated the username-password flow
+# (AcquireTokenByUsernamePassword, MSAL 4.74.0; UsernamePasswordCredential,
+# Azure.Identity 1.14.0-beta.2). A Temporary Access Pass does NOT help - it cannot be
+# presented by any of these cmdlets.
+#
+# THE FIX IS APP-ONLY (SERVICE PRINCIPAL) AUTH. It needs:
+#   * A certificate on the app registration. Exchange Online and Security & Compliance
+#     PowerShell support app-only with CERTIFICATES ONLY - client secrets do NOT work.
+#     Graph does accept a client secret (Connect-MgGraph -ClientSecretCredential).
+#   * API permissions, both Application, both admin-consented:
+#       - Office 365 Exchange Online          -> Exchange.ManageAsApp   (Connect-ExchangeOnline)
+#       - Microsoft Exchange Online Protection -> Exchange.ManageAsApp  (Connect-IPPSSession)
+#     Note: two different APIs, same permission name. Easy to miss.
+#   * An Entra directory role on the service principal: Compliance Administrator covers
+#     labels, DLP, SITs, role groups and audit.
+#   * For SharePoint: Sites.FullControl.All, or keep the manual T-24h portal click
+#     (Purview -> Information Protection -> "Turn on now") as the fallback.
+#
+# Then replace the four connections with:
+#   Connect-IPPSSession    -AppId <id> -CertificateThumbprint <thumb> -Organization <tenant>.onmicrosoft.com
+#   Connect-ExchangeOnline -AppId <id> -CertificateThumbprint <thumb> -Organization <tenant>.onmicrosoft.com
+#   Graph + SharePoint: client-credentials token instead of grant_type=password
+#
+# IMPORTANT: if you move to app-only, the certificate must NOT live on this VM. Learners
+# have local administrator here and the CSE writes this script to disk. Move that work to
+# the provisioning script that runs off-VM with the app identity.
+# =====================================================================================
 $c        = Get-Content "C:\LabFiles\AzureCreds.txt" | ConvertFrom-StringData
 $upn      = $c.AzureUserName
 $pwd      = $c.AzurePassword
@@ -108,7 +166,30 @@ function Invoke-WithRetry {
 # =====================================================================================
 # 1) LABELS + POLICY FIRST
 # =====================================================================================
-Invoke-WithRetry { Connect-IPPSSession -Credential $cred -DisableWAM -ErrorAction Stop } "Connect-IPPSSession" 5 30 | Out-Null
+# AUTH PROBE: if this fails, nothing below can work. Say so once, loudly, and stop -
+# rather than grinding through five retries per block and burying the cause in noise.
+# A tenant that cannot authenticate must announce itself at DEPLOY time, not at 9am.
+$ippsOk = Invoke-WithRetry { Connect-IPPSSession -Credential $cred -DisableWAM -ErrorAction Stop } "Connect-IPPSSession" 5 30
+
+if (-not $ippsOk) {
+    Write-Host ""
+    Write-Host "================================================================================"
+    Write-Host "FATAL: cannot authenticate as $upn"
+    Write-Host ""
+    Write-Host "This script signs in with the ODL admin username and password. If MFA is now"
+    Write-Host "enforced on this tenant (security defaults or Conditional Access), that is not"
+    Write-Host "recoverable here - password and ROPC flows are incompatible with MFA."
+    Write-Host ""
+    Write-Host "See the AUTHENTICATION MODEL comment block near the top of this script for the"
+    Write-Host "app-only (service principal + certificate) migration path."
+    Write-Host ""
+    Write-Host "SUMMARY: labels=0/5 policy=NO"
+    Write-Host "SUMMARY: BASELINE INCOMPLETE - do not hand this tenant to learners"
+    Write-Host "================================================================================"
+    Stop-Transcript
+    exit 1
+}
+
 try { Execute-AzureAdLabelSync } catch { Write-Host "label sync (pre): $($_.Exception.Message)" }
 
 $rights = "$($upn):VIEW,VIEWRIGHTSDATA,DOCEDIT,EDIT,PRINT,EXTRACT,REPLY,REPLYALL,FORWARD,OBJMODEL"
@@ -119,25 +200,139 @@ $labels = @(
     @{ N="HighlyConfidential";  D="Highly Confidential"; T="Highly sensitive - named users only.";                  H="HIGHLY CONFIDENTIAL"; F="Unauthorized disclosure is strictly prohibited"; W="HIGHLY CONFIDENTIAL"; E=$true },
     @{ N="Confidential-Finance";D="Confidential-Finance";T="Finance information containing sensitive data.";        H="Confidential Document"; F="Confidential Document"; W="Confidential"; E=$true }
 )
-foreach ($l in $labels) {
-    if (Get-Label -Identity $l.N -ErrorAction SilentlyContinue) { Write-Host "label exists: $($l.D)"; continue }
-    $p = @{ Name=$l.N; DisplayName=$l.D; Tooltip=$l.T; ContentType="File, Email, Site, UnifiedGroup, Teamwork" }
-    if ($l.H) { $p.ApplyContentMarkingHeaderEnabled=$true; $p.ApplyContentMarkingHeaderText=$l.H; $p.ApplyContentMarkingHeaderAlignment="Center" }
-    if ($l.F) { $p.ApplyContentMarkingFooterEnabled=$true; $p.ApplyContentMarkingFooterText=$l.F; $p.ApplyContentMarkingFooterAlignment="Center" }
-    if ($l.W) { $p.ApplyWaterMarkingEnabled=$true; $p.ApplyWaterMarkingText=$l.W; $p.ApplyWaterMarkingLayout="Diagonal" }
-    if ($l.E) { $p.EncryptionEnabled=$true; $p.EncryptionProtectionType="Template"; $p.EncryptionRightsDefinitions=$rights; $p.EncryptionContentExpiredOnDateInDaysOrNever="Never"; $p.EncryptionOfflineAccessDays=-1 }
-    try { New-Label @p | Out-Null; Write-Host "created label: $($l.D)" } catch { Write-Host "New-Label $($l.N) failed: $($_.Exception.Message)" }
+# -------------------------------------------------------------------------------------
+# THE RMS PROBLEM (read this before shortening any of the waits below)
+#
+# On 2026-08-31, two brand-new tenants failed ALL THREE encrypted labels with:
+#   RmsException: "Your TenantId '<guid>' is not found in Azure RMS."
+# Plain labels succeeded on the same run. Creating the same encrypted label BY HAND about
+# three hours later worked first try, same tenant, same credentials.
+#
+# So Azure Rights Management provisions itself some hours into a new tenant's life, and the
+# task firing at T+30min was simply too early. Only ENCRYPTION touches RMS, which is why
+# Public and Internal always survive and the other three do not. (A separate CloudLabs lab
+# creates labels successfully with no encryption at all - it never hits this.)
+#
+# Connect-AipService / Enable-AipService were tried and are NOT used: RMS came up on its own
+# without them, and they added a dependency for no proven benefit. The retry loop below is
+# the fix - it simply waits for the service to appear.
+# -------------------------------------------------------------------------------------
+# CREATE + VERIFY
+#
+# CRITICAL FIX: New-Label reports RmsException as a NON-TERMINATING error. With
+# $ErrorActionPreference = "Continue" and no -ErrorAction Stop, the catch never fired and
+# the script logged "created label: X" for labels that did not exist. Every run since has
+# been reporting success on tenants that had only 2 of 5 labels.
+#
+# So: -ErrorAction Stop AND a Get-Label verification. Never trust the cmdlet's silence.
+# -------------------------------------------------------------------------------------
+function New-LabelVerified {
+    param($L, [int]$Attempts, [int]$WaitSeconds)
+
+    if (Get-Label -Identity $L.N -ErrorAction SilentlyContinue) {
+        Write-Host "label exists: $($L.D)"
+        return $true
+    }
+
+    $p = @{ Name=$L.N; DisplayName=$L.D; Tooltip=$L.T; ContentType="File, Email, Site, UnifiedGroup, Teamwork" }
+    if ($L.H) { $p.ApplyContentMarkingHeaderEnabled=$true; $p.ApplyContentMarkingHeaderText=$L.H; $p.ApplyContentMarkingHeaderAlignment="Center" }
+    if ($L.F) { $p.ApplyContentMarkingFooterEnabled=$true; $p.ApplyContentMarkingFooterText=$L.F; $p.ApplyContentMarkingFooterAlignment="Center" }
+    if ($L.W) { $p.ApplyWaterMarkingEnabled=$true; $p.ApplyWaterMarkingText=$L.W; $p.ApplyWaterMarkingLayout="Diagonal" }
+    if ($L.E) { $p.EncryptionEnabled=$true; $p.EncryptionProtectionType="Template"; $p.EncryptionRightsDefinitions=$rights; $p.EncryptionContentExpiredOnDateInDaysOrNever="Never"; $p.EncryptionOfflineAccessDays=-1 }
+
+    for ($i = 1; $i -le $Attempts; $i++) {
+        try {
+            New-Label @p -ErrorAction Stop | Out-Null
+        } catch {
+            Write-Host "New-Label $($L.N) attempt $i/$Attempts : $($_.Exception.Message)"
+        }
+        Start-Sleep -Seconds 5
+        if (Get-Label -Identity $L.N -ErrorAction SilentlyContinue) {
+            Write-Host "created and verified label: $($L.D)"
+            return $true
+        }
+        if ($i -lt $Attempts) {
+            Write-Host "label $($L.N) not present yet - waiting $WaitSeconds s"
+            Start-Sleep -Seconds $WaitSeconds
+        }
+    }
+    Write-Host "LABEL FAILED: $($L.D) does NOT exist after $Attempts attempts"
+    return $false
 }
 
+$plainLabels = @($labels | Where-Object { -not $_.E })
+$encLabels   = @($labels | Where-Object { $_.E })
+
+# Plain labels never needed RMS - they succeeded even on the failed runs.
+foreach ($l in $plainLabels) { New-LabelVerified $l 3 30 | Out-Null }
+
+# The FIRST encrypted label doubles as the RMS readiness gate: retry it patiently, and once
+# it lands we know RMS is up, so the rest go quickly. Gating on one label caps the worst
+# case at ~2 hours instead of 2 hours per label. Nothing is waiting on this - it runs as
+# SYSTEM in the background at T-48h.
+$rmsReady = $false
+if ($encLabels.Count -gt 0) {
+    Write-Host "waiting for Azure RMS via first encrypted label (up to ~2 hours)..."
+    $rmsReady = New-LabelVerified $encLabels[0] 12 600
+}
+
+if ($rmsReady) {
+    foreach ($l in ($encLabels | Select-Object -Skip 1)) { New-LabelVerified $l 4 60 | Out-Null }
+} elseif ($encLabels.Count -gt 0) {
+    Write-Host "RMS NEVER BECAME AVAILABLE - encrypted labels were not created"
+}
+
+# -------------------------------------------------------------------------------------
+# POLICY - build only from labels that actually exist, and verify afterwards.
+# Previously a missing label produced a null in the GUID array, New-LabelPolicy threw
+# "Object reference not set to an instance of an object", and the script logged success.
+# -------------------------------------------------------------------------------------
 $policyName = "Lab-Confidential-Policy"
 if (-not (Get-LabelPolicy -Identity $policyName -ErrorAction SilentlyContinue)) {
-    try {
-        $guids = @("Public","Internal","Confidential","HighlyConfidential","Confidential-Finance") | ForEach-Object { (Get-Label -Identity $_).Guid }
-        New-LabelPolicy -Name $policyName -Labels $guids -ExchangeLocation All -SharePointLocation All -OneDriveLocation All -ModernGroupLocation All -Comment "Day1 lab label policy" | Out-Null
-        Write-Host "created label policy: $policyName"
-    } catch { Write-Host "New-LabelPolicy failed: $($_.Exception.Message)" }
+
+    $guids = @()
+    foreach ($n in @("Public","Internal","Confidential","HighlyConfidential","Confidential-Finance")) {
+        try {
+            $g = (Get-Label -Identity $n -ErrorAction Stop).Guid
+            if ($g) { $guids += $g }
+        } catch { Write-Host "policy: skipping missing label $n" }
+    }
+    Write-Host "policy will publish $($guids.Count) of 5 labels"
+
+    if ($guids.Count -eq 0) {
+        Write-Host "POLICY FAILED: no labels exist to publish"
+    } else {
+        $polOk = $false
+        for ($i = 1; $i -le 3; $i++) {
+            try {
+                New-LabelPolicy -Name $policyName -Labels $guids -ExchangeLocation All -SharePointLocation All -OneDriveLocation All -ModernGroupLocation All -Comment "Day1 lab label policy" -ErrorAction Stop | Out-Null
+            } catch {
+                Write-Host "New-LabelPolicy attempt $i/3 : $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds 5
+            if (Get-LabelPolicy -Identity $policyName -ErrorAction SilentlyContinue) {
+                Write-Host "created and verified label policy: $policyName"
+                $polOk = $true
+                break
+            }
+            if ($i -lt 3) { Start-Sleep -Seconds 30 }
+        }
+        if (-not $polOk) { Write-Host "POLICY FAILED: $policyName does NOT exist" }
+    }
 }
 try { Execute-AzureAdLabelSync } catch { Write-Host "label sync (post): $($_.Exception.Message)" }
+
+# -------------------------------------------------------------------------------------
+# HONEST SUMMARY - this is the line the verification runbook greps for.
+# -------------------------------------------------------------------------------------
+$haveLabels = @(Get-Label -ErrorAction SilentlyContinue).Count
+$havePolicy = if (Get-LabelPolicy -Identity $policyName -ErrorAction SilentlyContinue) { "yes" } else { "NO" }
+Write-Host "SUMMARY: labels=$haveLabels/5 policy=$havePolicy"
+if ($haveLabels -lt 5 -or $havePolicy -eq "NO") {
+    Write-Host "SUMMARY: BASELINE INCOMPLETE - do not hand this tenant to learners"
+} else {
+    Write-Host "SUMMARY: baseline OK"
+}
 
 # =====================================================================================
 # 1b) PURVIEW ROLE GROUPS (still inside the IPPS session opened above)
@@ -255,15 +450,25 @@ Invoke-WithRetry {
     Add-Type -Path (Join-Path $modPath "Microsoft.SharePoint.Client.Runtime.dll")
     Add-Type -Path (Join-Path $modPath "Microsoft.Online.SharePoint.Client.Tenant.dll")
 
-    $ctx = New-Object Microsoft.SharePoint.Client.ClientContext($adminUrl)
-    $ctx.ExecutingWebRequest += [Microsoft.SharePoint.Client.WebRequestEventHandler]{
-        param($s,$e) $e.WebRequestExecutor.RequestHeaders["Authorization"] = "Bearer $spTok"
-    }
-
-    $spoTenant = New-Object Microsoft.Online.SharePoint.TenantAdministration.Tenant($ctx)
-    $spoTenant.EnableAIPIntegration = $true
-    $spoTenant.Update()
-    $ctx.ExecuteQuery()
+    # PARSE-ORDER FIX (2026-08-31): this block previously failed on every run with
+    #   "Unable to find type [Microsoft.SharePoint.Client.WebRequestEventHandler]"
+    # PowerShell resolves type literals when it PARSES the enclosing script block, which
+    # happens before Add-Type has loaded the assemblies. Nothing to do with tokens or
+    # permissions. [scriptblock]::Create parses at runtime, after the types exist.
+    $csom = [scriptblock]::Create(@"
+        param(`$adminUrl, `$spTok)
+        `$ctx = New-Object Microsoft.SharePoint.Client.ClientContext(`$adminUrl)
+        `$handler = [Microsoft.SharePoint.Client.WebRequestEventHandler]{
+            param(`$s, `$e)
+            `$e.WebRequestExecutor.RequestHeaders["Authorization"] = "Bearer `$spTok"
+        }
+        `$ctx.add_ExecutingWebRequest(`$handler)
+        `$spoTenant = New-Object Microsoft.Online.SharePoint.TenantAdministration.Tenant(`$ctx)
+        `$spoTenant.EnableAIPIntegration = `$true
+        `$spoTenant.Update()
+        `$ctx.ExecuteQuery()
+"@)
+    & $csom $adminUrl $spTok
     Write-Host "EnableAIPIntegration: set to true via CSOM"
 } "EnableAIPIntegration (CSOM)" 5 60 | Out-Null
 
@@ -341,6 +546,11 @@ if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
 
 # Install Microsoft 365 Apps
 choco install office365business -y
+
+# PowerShell 7. The WAM broker that breaks interactive Connect-IPPSSession under PS 5.1
+# ("A window handle must be configured") does not apply to the netCore build, so anyone
+# troubleshooting this tenant by hand should use PS 7. Borrowed from another CloudLabs lab.
+choco install powershell-core --version=7.4.2 -y
 
 # Suppress Edge first-run experience and configure bookmarks
 $EdgePoliciesPath = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
