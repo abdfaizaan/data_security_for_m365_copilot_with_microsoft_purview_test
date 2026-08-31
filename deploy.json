@@ -33,7 +33,7 @@
     }
   },
   "variables": {
-    "scripturl": "https://faizanstorageaccount237.blob.core.windows.net/copilot-and-purview-lab/psscript.ps1",
+    "scripturl": "https://github.com/abdfaizaan/data_security_for_m365_copilot_with_microsoft_purview_test/blob/main/psscript.ps1",
     "arg": "[concat(variables('arg1'),variables('arg2'),variables('arg3'),variables('arg4'),variables('arg5'))]",
     "arg1": "[concat(' -AzureUserName ', parameters('AzureUserName'), ' -AzurePassword ', parameters('AzurePassword'))]",
     "arg2": "[concat(' -AzureTenantID ', variables('AzureTenantID'), ' -AzureSubscriptionID ', variables('AzureSubscriptionID'))]",
