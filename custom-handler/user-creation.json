@@ -1,0 +1,20 @@
+{
+  "AutoPasswordGeneration": true,
+  "Users": [
+    {
+      "FirstName": "Lab",
+      "LastName": "User-1",
+      "UPNPrefix": "Lab_User-1",
+      "GlobalAdmin": false,
+      "UserLicenses": [
+        "2b3b8d2d-10aa-4be4-b5fd-7f2feb0c3091"
+      ]
+    },    
+  ],
+  "Licenses": [
+    {
+      "offerId": "2b3b8d2d-10aa-4be4-b5fd-7f2feb0c3091",
+      "quantity": 1
+    }
+  ]
+}
