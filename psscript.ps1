@@ -102,8 +102,8 @@ Import-Module ExchangeOnlineManagement -Force
 #   3. Graph ROPC       (grant_type=password) - EnableMIPLabels
 #   4. SharePoint ROPC  (grant_type=password) - EnableAIPIntegration
 #
-# WHY THIS WORKS: ODL tenants ship with security defaults and Conditional Access OFF.
-# Confirmed with the CloudLabs team on 2026-08-31, and verified on three live tenants.
+# WHY THIS WORKS: OTU tenants ship with security defaults and Conditional Access OFF.
+# Confirmed and verified on three live tenants.
 #
 # NOT AFFECTED by the Azure mandatory MFA enforcement (Phase 2, from 1 July 2026): that
 # enforcement is scoped to requests against https://management.azure.com/ only, i.e. Azure
@@ -166,9 +166,7 @@ function Invoke-WithRetry {
 # =====================================================================================
 # 1) LABELS + POLICY FIRST
 # =====================================================================================
-# AUTH PROBE: if this fails, nothing below can work. Say so once, loudly, and stop -
-# rather than grinding through five retries per block and burying the cause in noise.
-# A tenant that cannot authenticate must announce itself at DEPLOY time, not at 9am.
+
 $ippsOk = Invoke-WithRetry { Connect-IPPSSession -Credential $cred -DisableWAM -ErrorAction Stop } "Connect-IPPSSession" 5 30
 
 if (-not $ippsOk) {
@@ -337,7 +335,7 @@ if ($haveLabels -lt 5 -or $havePolicy -eq "NO") {
 # =====================================================================================
 # 1b) PURVIEW ROLE GROUPS (still inside the IPPS session opened above)
 #
-# WHY: the CloudLabs ODL admin is an Entra Global Administrator, but the Purview portal
+# WHY: the CloudLabs ODL user is an Entra Global Administrator, but the Purview portal
 # checks explicit ROLE GROUP membership, which a GA does not get automatically. Without
 # these, Content Explorer throws "Permission required" on every location and the DSPM AI
 # activity view reports "Your role can't view AI Visits or user risk levels".
@@ -430,8 +428,7 @@ Invoke-WithRetry {
 # breaks the Exercise 4 labelling verification.
 #
 # The result is captured in $aipOk (rather than discarded to Out-Null) so the FINAL
-# SUMMARY at the end of this script can report honestly on it. On 103908 this step
-# failed silently while the earlier summary still said "baseline OK".
+# SUMMARY at the end of this script can report honestly on it.
 $aipOk = Invoke-WithRetry {
     $tenantPrefix = $org.Split('.')[0]
     $adminUrl     = "https://$tenantPrefix-admin.sharepoint.com"
@@ -499,8 +496,7 @@ try { $fLabels = (Get-Label -ErrorAction SilentlyContinue | Measure-Object).Coun
 try { if (Get-LabelPolicy -Identity "Lab-Confidential-Policy" -ErrorAction SilentlyContinue) { $fPolicy = "yes" } } catch {}
 
 # Audit is an EXCHANGE ONLINE org setting. If the tenant has no Exchange licence this
-# reports NO and the cause is licensing, not the script. 103908 failed here with
-# "Organization ... is not licensed for Exchange email functionality".
+# reports NO and the cause is licensing, not the script.
 $fAudit = "NO"
 try { if ((Get-AdminAuditLogConfig -ErrorAction Stop).UnifiedAuditLogIngestionEnabled) { $fAudit = "yes" } }
 catch { $fAudit = "UNKNOWN" }
@@ -553,8 +549,7 @@ if (-not (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue)) 
 #
 # WHY THIS MATTERS: a /sc once task does NOT auto-run a missed start by default. If the VM
 # is deallocated (or simply not running) at the trigger time, the seeding is silently skipped
-# forever and the tenant is left with no labels. That happened on 2026-08-26 when the VM was
-# stopped ~17 minutes before the task was due to fire.
+# forever and the tenant is left with no labels.
 #
 # Read-modify-write a single property so the proven schtasks creation above is preserved.
 try {
@@ -607,7 +602,7 @@ choco install office365business -y
 
 # PowerShell 7. The WAM broker that breaks interactive Connect-IPPSSession under PS 5.1
 # ("A window handle must be configured") does not apply to the netCore build, so anyone
-# troubleshooting this tenant by hand should use PS 7. Borrowed from another CloudLabs lab.
+# troubleshooting this tenant by hand should use PS 7. 
 choco install powershell-core --version=7.4.2 -y
 
 # Suppress Edge first-run experience and configure bookmarks
