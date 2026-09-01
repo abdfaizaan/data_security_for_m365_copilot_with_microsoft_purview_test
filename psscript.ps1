@@ -428,7 +428,11 @@ Invoke-WithRetry {
 # WHY IT MATTERS: without EnableAIPIntegration, sensitivity labels do not apply to Office
 # files in SharePoint/OneDrive AND the SharePoint "Sensitivity" column is unavailable, which
 # breaks the Exercise 4 labelling verification.
-Invoke-WithRetry {
+#
+# The result is captured in $aipOk (rather than discarded to Out-Null) so the FINAL
+# SUMMARY at the end of this script can report honestly on it. On 103908 this step
+# failed silently while the earlier summary still said "baseline OK".
+$aipOk = Invoke-WithRetry {
     $tenantPrefix = $org.Split('.')[0]
     $adminUrl     = "https://$tenantPrefix-admin.sharepoint.com"
 
@@ -470,7 +474,61 @@ Invoke-WithRetry {
 "@)
     & $csom $adminUrl $spTok
     Write-Host "EnableAIPIntegration: set to true via CSOM"
-} "EnableAIPIntegration (CSOM)" 5 60 | Out-Null
+} "EnableAIPIntegration (CSOM)" 5 60
+
+# =====================================================================================
+# FINAL SUMMARY (added 2026-09-01)
+#
+# WHY THIS EXISTS: the earlier "SUMMARY: baseline OK" line prints immediately after the
+# label policy, which is BEFORE role groups, audit and EnableAIPIntegration have run.
+# On environment 103908 that produced "baseline OK" on a tenant where audit was broken
+# and the SharePoint Sensitivity column was never enabled - exactly the silent failure
+# the summary was meant to catch.
+#
+# This block re-checks everything at the true end of the run. Grep for FINAL SUMMARY,
+# not for the earlier line.
+# =====================================================================================
+Write-Host ""
+Write-Host "=============================================================="
+Write-Host "  FINAL SUMMARY - checked after ALL steps, not just labels"
+Write-Host "=============================================================="
+
+$fLabels = 0
+$fPolicy = "NO"
+try { $fLabels = (Get-Label -ErrorAction SilentlyContinue | Measure-Object).Count } catch {}
+try { if (Get-LabelPolicy -Identity "Lab-Confidential-Policy" -ErrorAction SilentlyContinue) { $fPolicy = "yes" } } catch {}
+
+# Audit is an EXCHANGE ONLINE org setting. If the tenant has no Exchange licence this
+# reports NO and the cause is licensing, not the script. 103908 failed here with
+# "Organization ... is not licensed for Exchange email functionality".
+$fAudit = "NO"
+try { if ((Get-AdminAuditLogConfig -ErrorAction Stop).UnifiedAuditLogIngestionEnabled) { $fAudit = "yes" } }
+catch { $fAudit = "UNKNOWN" }
+
+# EnableAIPIntegration cannot be read back from here, so report whether the step ran
+# clean. $aipOk is set by the CSOM block above.
+$fAip = if ($aipOk) { "yes" } else { "NO" }
+
+Write-Host "FINAL SUMMARY: labels=$fLabels/5 policy=$fPolicy audit=$fAudit aipIntegration=$fAip"
+
+if ($fLabels -ge 5 -and $fPolicy -eq "yes" -and $fAudit -eq "yes" -and $fAip -eq "yes") {
+    Write-Host "FINAL SUMMARY: ALL GREEN - tenant is ready for learners"
+} elseif ($fLabels -ge 5 -and $fPolicy -eq "yes") {
+    Write-Host "FINAL SUMMARY: LABELS OK BUT ANCILLARY STEPS FAILED"
+    if ($fAudit -ne "yes") {
+        Write-Host "FINAL SUMMARY:   - AUDIT NOT ON. Day 1 Ex 2 Task 2 and all DSPM/Activity"
+        Write-Host "FINAL SUMMARY:     Explorer reporting will be empty. Check the tenant has an"
+        Write-Host "FINAL SUMMARY:     EXCHANGE ONLINE licence, not just Purview."
+    }
+    if ($fAip -ne "yes") {
+        Write-Host "FINAL SUMMARY:   - NO SHAREPOINT SENSITIVITY COLUMN. Day 1 Ex 4 verification"
+        Write-Host "FINAL SUMMARY:     will fail. Turn on manually: Purview > Information"
+        Write-Host "FINAL SUMMARY:     Protection > 'Turn on now' banner."
+    }
+    Write-Host "FINAL SUMMARY: Exercises 1, 3 and 4 labelling will still work."
+} else {
+    Write-Host "FINAL SUMMARY: BASELINE INCOMPLETE - do not hand this tenant to learners"
+}
 
 try { Disconnect-ExchangeOnline -Confirm:$false } catch {}
 Write-Host "Seeding complete."
