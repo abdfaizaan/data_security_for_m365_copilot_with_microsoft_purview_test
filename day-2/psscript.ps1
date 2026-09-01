@@ -45,12 +45,11 @@ Param (
 #      Compliance, Copilot app retention, the eDiscovery case, and the eDiscovery
 #      Manager / Insider Risk / Communication Compliance role groups.
 #
-#   2. The scheduled task fires at T+45 minutes rather than T+30. Day 2 has more
-#      tenant work to do and there is no cost to waiting, since deployment is at T-48h.
+#   2. The scheduled task fires at T+45 minutes. Day 2 has more
 #
 # WHAT THIS SCRIPT DOES NOT DO:
 #   - It does not create the SharePoint site or the 5 test files. That is your separate
-#     SharePoint provisioning script and it must also run.
+#     SharePoint provisioning script (deployment script in template)
 #   - It does not create the second lab user. CloudLabs provisions that at tenant
 #     creation, with a base licence, SharePoint read on the ContosoFinance site, no
 #     admin roles, no MFA, and a password that does not require change at first sign-in.
@@ -122,8 +121,6 @@ $seedScript = @'
 # Why this is acceptable on CloudLabs ODL tenants:
 #   - Security defaults are off and MFA is not enforced on these tenants
 #   - The credential is already on the VM's desktop for the learner to use
-#   - No client secret is introduced; the learner has local admin on this VM, so
-#     placing an app secret here would be strictly worse
 #
 # If MFA ever appears on ODL tenants this script fails at the auth probe and says
 # so loudly rather than half-completing. The migration path is a service principal
@@ -439,10 +436,6 @@ if (Get-DlpSensitiveInformationType | Where-Object { $_.Name -eq "Contoso Employ
 # genuinely enforcing when class starts. The learner builds their own equivalent
 # during Exercise 2, which will NOT enforce within the 4-hour class - the guide
 # says so explicitly.
-#
-# CONFIRMED WORKING on 103906: Copilot refused a Confidential-labelled file with
-# "None of the files or resources you requested are available due to your
-# organization's policies."
 # =====================================================================================
 Write-Host ""
 Write-Host "=============================================================="
