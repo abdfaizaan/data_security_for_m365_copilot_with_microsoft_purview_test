@@ -40,7 +40,7 @@
     "arg3": "[concat(' -ODLID ', parameters('ODLID'), ' -DeploymentID ', parameters('DeploymentID'))]",
     "arg4": "[concat(' -vmAdminUsername ', parameters('adminUsername'), ' -vmAdminPassword ', parameters('adminPassword'))]",
     "arg5": "[concat(' -trainerUserName ', parameters('trainerUserName'), ' -trainerUserPassword ', parameters('trainerUserPassword'))]",
-    "commandToExecute": "[concat('powershell -ExecutionPolicy Unrestricted -File psscript.ps1', variables('arg'))]",
+    "commandToExecute": "[concat('powershell -ExecutionPolicy Unrestricted -File psscript-0309.ps1', variables('arg'))]",
     "AzureTenantID": "[subscription().tenantId]",
     "AzureSubscriptionID": "[subscription().subscriptionId]",
 		"tenantDomain": "[split(parameters('AzureUserName'), '@')[1]]",
