@@ -365,7 +365,16 @@ try { Execute-AzureAdLabelSync } catch { Write-Host "label sync (post): $($_.Exc
 # Membership takes ~30-60 min to propagate and needs a fresh sign-in. Doing it here at
 # deploy time (T-48h) means learners never encounter the permission errors.
 # =====================================================================================
-foreach ($rg in @("ContentExplorerListViewer","ContentExplorerContentViewer","DataSecurityAIContentViewers")) {
+foreach ($rg in @(
+    "ContentExplorerListViewer",
+    "ContentExplorerContentViewer",
+    "DataSecurityAIContentViewers",
+    "InsiderRiskManagement",
+    "InsiderRiskManagementAnalysts",
+    "InsiderRiskManagementInvestigators",
+    "eDiscoveryManager",
+    "Organization Management"
+    )) {
     try {
         Add-RoleGroupMember $rg -Member $upn -ErrorAction Stop
         Write-Host "role group: added $upn to $rg"
