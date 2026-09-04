@@ -372,6 +372,9 @@ foreach ($rg in @(
     "InsiderRiskManagement",
     "InsiderRiskManagementAnalysts",
     "InsiderRiskManagementInvestigators",
+    "CommunicationCompliance",
+    "CommunicationComplianceAnalysts",
+    "CommunicationComplianceInvestigators"
     "eDiscoveryManager",
     "Organization Management"
     )) {
